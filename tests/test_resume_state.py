@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import partial
 from types import SimpleNamespace
 
 from lm_eval.api.instance import Instance
@@ -193,3 +194,19 @@ def test_resume_state_rejects_mismatched_manifest(tmp_path):
         assert "does not match" in str(exc)
     else:
         raise AssertionError("Expected mismatched resume manifests to fail")
+
+
+def test_resume_state_manifest_serializes_non_json_values(tmp_path):
+    resume_state = ResumeStateManager(
+        str(tmp_path),
+        run_config={
+            "task": "dummy_generate",
+            "callable": partial(str.upper),
+        },
+        task_filters={"dummy_generate": ["none"]},
+    )
+
+    resume_state.prepare()
+
+    manifest = resume_state.manifest_path.read_text(encoding="utf-8")
+    assert "functools.partial" in manifest

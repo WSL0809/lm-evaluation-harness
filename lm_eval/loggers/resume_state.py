@@ -61,7 +61,12 @@ class ResumeStateManager:
             return
 
         self.manifest_path.write_text(
-            json.dumps(expected, indent=2, ensure_ascii=False),
+            json.dumps(
+                expected,
+                indent=2,
+                ensure_ascii=False,
+                default=handle_non_serializable,
+            ),
             encoding="utf-8",
         )
 
