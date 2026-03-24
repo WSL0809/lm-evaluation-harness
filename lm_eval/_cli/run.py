@@ -176,6 +176,12 @@ class Run(SubCommand):
             help="Output dir or json file for results (and samples)",
         )
         data_group.add_argument(
+            "--resume",
+            action="store_true",
+            default=argparse.SUPPRESS,
+            help="Resume a previous generate_until run from output_path",
+        )
+        data_group.add_argument(
             "--log_samples",
             "-s",
             action="store_true",
@@ -413,6 +419,7 @@ class Run(SubCommand):
             fewshot_random_seed=cfg.seed[3] if cfg.seed else None,
             confirm_run_unsafe_code=cfg.confirm_run_unsafe_code,
             metadata=cfg.metadata,
+            resume=cfg.resume,
         )
 
         # Process results

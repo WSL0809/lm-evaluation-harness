@@ -41,6 +41,9 @@ lm-eval run --model hf --model_args pretrained=gpt2 --tasks arc_easy --num_fewsh
 # Save results and model outputs
 lm-eval run --model hf --model_args pretrained=gpt2 --tasks hellaswag --output_path ./results/ --log_samples
 
+# Resume a previous generate_until run
+lm-eval run --model local-completions --model_args model=my-model,base_url=http://localhost:8000/v1/completions --tasks mmlu_pro --output_path ./results/mmlu_pro --resume
+
 # Use a config file
 lm-eval run --config eval_config.yaml
 ```
@@ -66,6 +69,9 @@ lm-eval run --model vllm --model_args pretrained=EleutherAI/gpt-j-6B --tasks arc
 
 # Custom generation parameters
 lm-eval run --model hf --model_args pretrained=gpt2 --tasks lambada --gen_kwargs temperature=0.8 top_p=0.95
+
+# Resume a generate_until run after interruption
+lm-eval run --model local-completions --model_args model=my-model,base_url=http://localhost:8000/v1/completions --tasks mmlu_pro --output_path ./results/mmlu_pro --resume
 
 # Use a YAML configuration file
 lm-eval run --config my_config.yaml --tasks mmlu
@@ -97,6 +103,7 @@ lm-eval run --config my_config.yaml --tasks mmlu
 | Argument | Short | Description |
 |----------|-------|-------------|
 | `--output_path` | `-o` | Output directory or JSON file for results. Required with `--log_samples`. |
+| `--resume` | | Resume a previous `generate_until` run from hidden state stored under `output_path`. Requires `--output_path`. |
 | `--log_samples` | `-s` | Save all model inputs/outputs for post-hoc analysis. |
 | `--samples` | `-E` | JSON mapping task names to sample indices, e.g., `'{"task1": [0,1,2]}'`. Incompatible with `--limit`. |
 
@@ -104,8 +111,31 @@ lm-eval run --config my_config.yaml --tasks mmlu
 
 | Argument | Description |
 |----------|-------------|
+| `--use_cache` | Cache model responses in SQLite and reuse matching requests on later runs. Useful for skipping repeated inference, but it does not track evaluation progress or detect completed samples. |
 | `--cache_requests` | Cache preprocessed prompts: `true`, `refresh`, or `delete`. Cached files stored in `lm_eval/cache/.cache` or path set by `LM_HARNESS_CACHE_PATH` env var. |
 | `--check_integrity` | Run task test suite validation before evaluation. |
+
+### Resuming Interrupted Runs
+
+`--resume` is intended for interrupted `generate_until` evaluations where you want to continue from the same `--output_path` without re-requesting completed samples.
+
+- `--resume` currently supports single-rank `generate_until` runs only.
+- Progress is stored in a hidden `.lm_eval_resume/` directory under `output_path`.
+- This hidden state is written even if `--log_samples` is not enabled.
+- The resumed command must match the original run configuration. If key settings differ, lm-eval will fail fast instead of mixing incompatible state.
+- `--resume` and `--use_cache` are complementary:
+  `--resume` tracks per-sample evaluation progress, while `--use_cache` only caches raw model responses.
+
+Example:
+
+```bash
+lm-eval run \
+  --model local-completions \
+  --model_args model=my-model,base_url=http://localhost:8000/v1/completions \
+  --tasks mmlu_pro \
+  --output_path ./results/mmlu_pro \
+  --resume
+```
 
 ### Prompt Formatting
 

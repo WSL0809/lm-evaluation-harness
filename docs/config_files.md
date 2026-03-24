@@ -40,6 +40,7 @@ All configuration keys correspond directly to CLI arguments. See the [CLI Refere
 | `use_cache` | string/null | `null` | Response cache path |
 | `cache_requests` | string/dict | `{}` | Request cache settings |
 | `output_path` | string/null | `null` | Results output path |
+| `resume` | bool | `false` | Resume a previous `generate_until` run from `output_path` |
 | `log_samples` | bool | `false` | Save model I/O |
 | `predict_only` | bool | `false` | Skip metrics |
 | `apply_chat_template` | bool/string | `false` | Chat template |
@@ -73,6 +74,7 @@ batch_size: auto
 device: cuda:0
 
 output_path: ./results/gpt2/
+resume: false
 log_samples: true
 
 wandb_args:
@@ -118,4 +120,28 @@ lm-eval validate --tasks my_task --include_path /path/to/tasks
 2. **Use CLI overrides**: Set defaults in config, override with CLI for experiments
 3. **Separate concerns**: Create different configs for different model families or task sets
 4. **Version control**: Commit config files alongside results for reproducibility
+
+## Resuming Interrupted Runs
+
+Set `resume: true` to continue a previous `generate_until` run from the same `output_path`:
+
+```yaml
+model: local-completions
+model_args:
+  model: my-model
+  base_url: http://localhost:8000/v1/completions
+
+tasks:
+  - mmlu_pro
+
+output_path: ./results/mmlu_pro/
+resume: true
+```
+
+Notes:
+
+- `resume` requires `output_path`.
+- Resume state is stored in a hidden `.lm_eval_resume/` directory under `output_path`.
+- The saved state is validated against the current run configuration before resuming.
+- v1 resume support is limited to single-rank `generate_until` runs.
 5. **Use comments**: YAML supports `#` comments to document your choices

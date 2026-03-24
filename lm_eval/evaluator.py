@@ -83,6 +83,7 @@ def simple_evaluate(
     fewshot_random_seed: int = DEFAULT_OTHER_SEED,
     confirm_run_unsafe_code: bool = False,
     metadata: dict[str, Any] | None = None,
+    resume: bool = False,
 ) -> EvalResults | None:
     """Instantiate and evaluate a model on a list of tasks.
 
@@ -153,6 +154,8 @@ def simple_evaluate(
             as unsafe (e.g. code execution tasks).
         metadata (dict | None): Additional metadata to be added to the task
             manager. Will get passed to the download function of the task.
+        resume (bool): Whether to resume a previous generate_until run using
+            hidden state under the output path.
 
     Returns:
         dict | None: Dictionary of results, or None if not on rank 0.
@@ -334,6 +337,64 @@ def simple_evaluate(
         # fewshot_random_seed set for tasks, even with a default num_fewshot (e.g. in the YAML file)
         task_obj.set_fewshot_seed(seed=fewshot_random_seed)
 
+    resume_state = None
+    if resume:
+        if evaluation_tracker is None or not evaluation_tracker.output_path:
+            raise ValueError("--resume requires an output_path")
+        if lm.world_size != 1:
+            raise ValueError("--resume currently supports only single-rank runs")
+        unsupported_tasks = [
+            task_name
+            for task_name, task_obj in loaded["tasks"].items()
+            if task_obj.get_config("output_type") != "generate_until"
+        ]
+        if unsupported_tasks:
+            raise ValueError(
+                "--resume currently supports only generate_until tasks. "
+                f"Unsupported tasks: {unsupported_tasks}"
+            )
+        from lm_eval.loggers.resume_state import ResumeStateManager
+
+        task_filters = {
+            task_name: [
+                filter_obj.name
+                for filter_obj in getattr(task_obj, "_filters", [])
+            ]
+            or ["none"]
+            for task_name, task_obj in loaded["tasks"].items()
+        }
+        resume_payload = {
+            "tasks": list(loaded["tasks"].keys()),
+            "model": model if isinstance(model, str) else type(model).__name__,
+            "model_args": model_args,
+            "num_fewshot": {
+                task_name: task_obj.get_config("num_fewshot")
+                for task_name, task_obj in loaded["tasks"].items()
+            },
+            "gen_kwargs": gen_kwargs,
+            "limit": limit,
+            "samples": samples,
+            "system_instruction": system_instruction,
+            "apply_chat_template": apply_chat_template,
+            "fewshot_as_multiturn": fewshot_as_multiturn,
+            "seeds": {
+                "random": random_seed,
+                "numpy": numpy_random_seed,
+                "torch": torch_random_seed,
+                "fewshot": fewshot_random_seed,
+            },
+            "task_configs": {
+                task_name: task_obj.dump_config()
+                for task_name, task_obj in loaded["tasks"].items()
+            },
+        }
+        resume_state = ResumeStateManager(
+            evaluation_tracker.output_path,
+            run_config=resume_payload,
+            task_filters=task_filters,
+        )
+        resume_state.prepare()
+
     if check_integrity:
         run_task_tests(task_list=tasks)
 
@@ -363,6 +424,7 @@ def simple_evaluate(
         fewshot_as_multiturn=fewshot_as_multiturn,
         verbosity=verbosity,
         confirm_run_unsafe_code=confirm_run_unsafe_code,
+        resume_state=resume_state,
     )
     if verbosity is not None:
         setup_logging(verbosity=verbosity)
@@ -426,6 +488,7 @@ def evaluate(
     fewshot_as_multiturn: bool = False,
     verbosity: str = "INFO",
     confirm_run_unsafe_code: bool = False,
+    resume_state=None,
 ) -> EvalResults | None:
     """Instantiate and evaluate a model on a list of tasks.
 
@@ -521,12 +584,34 @@ def evaluate(
     # Cache the limit arg.
     limit_arg = limit
     limits = []
+    task_sample_indices: dict[str, list[int] | None] = {}
     for task_name, task in eval_tasks.items():
         limit = get_sample_size(task, limit_arg)
         limits.append(limit)
+        requested_samples = (
+            samples.get(task_name, None) if samples is not None else None
+        )
+        run_samples = requested_samples
+        if resume_state is not None:
+            total_docs = len(task.eval_docs)
+            selected_doc_ids = (
+                list(requested_samples)
+                if requested_samples is not None
+                else list(range(limit if limit is not None else total_docs))
+            )
+            completed_doc_ids = resume_state.restore_task_history(
+                task_name,
+                acc=eval_results_acc[task_name],
+                log_samples=log_samples,
+            )
+            run_samples = [
+                doc_id for doc_id in selected_doc_ids if doc_id not in completed_doc_ids
+            ]
+            limit = None
+        task_sample_indices[task_name] = run_samples
         task.build_all_requests(
             limit=limit,
-            samples=samples.get(task_name, None) if samples is not None else samples,
+            samples=run_samples,
             rank=lm.rank,
             world_size=lm.world_size,
             cache_requests=cache_requests,
@@ -598,6 +683,8 @@ def evaluate(
     # TODO: del model here, maybe (idea: allow user to specify device of e.g. reward model separately)
     for (task_name, acc), limit in zip(eval_results_acc.items(), limits, strict=True):
         task = acc["task"]
+        if not task.instances:
+            continue
         task.apply_filters()
 
         ### Collect values of metrics on all datapoints ###
@@ -612,7 +699,7 @@ def evaluate(
             instances.sort(key=lambda x: x.idx)
         # iterate over different filters used
         for filter_key in task.instances[0].filtered_resps:
-            indices = samples.get(task_name, None) if samples is not None else None
+            indices = task_sample_indices[task_name]
             doc_iterator = task.doc_iterator(
                 rank=RANK,
                 limit=limit,
@@ -625,9 +712,10 @@ def evaluate(
                 metrics = task.process_results(
                     doc, [req.filtered_resps[filter_key] for req in requests]
                 )
-                if log_samples:
+                sample_record = None
+                if log_samples or resume_state is not None:
                     target = task.doc_to_target(doc)
-                    example = {
+                    sample_record = {
                         "doc_id": doc_id_true,
                         "doc": doc,
                         "target": target,
@@ -649,8 +737,11 @@ def evaluate(
                         "prompt_hash": hash_string(requests[0].arguments[0]),
                         "target_hash": hash_string(str(target)),
                     }
-                    example.update(metrics)
-                    acc["logged_samples"].append(example)
+                    sample_record.update(metrics)
+                    if log_samples:
+                        acc["logged_samples"].append(sample_record)
+                    if resume_state is not None:
+                        resume_state.append_sample(task_name, sample_record)
                 for metric, value in metrics.items():
                     acc["raw_metrics"][(metric, filter_key)].append(value)
 

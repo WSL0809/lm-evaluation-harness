@@ -115,6 +115,10 @@ class EvaluatorConfig:
     output_path: str | None = field(
         default=None, metadata={"help": "Dir path where result metrics will be saved"}
     )
+    resume: bool = field(
+        default=False,
+        metadata={"help": "Resume a previous generate_until run from output_path"},
+    )
     predict_only: bool = field(
         default=False,
         metadata={
@@ -292,6 +296,8 @@ class EvaluatorConfig:
             raise ValueError(
                 "Specify --output_path if providing --log_samples or --predict_only"
             )
+        if self.resume and not self.output_path:
+            raise ValueError("Specify --output_path if providing --resume")
 
         # Handle fewshot_as_multiturn logic:
         # - If None and apply_chat_template is set, default to True

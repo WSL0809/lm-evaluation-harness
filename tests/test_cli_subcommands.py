@@ -243,6 +243,15 @@ class TestRunCommand:
         args = parser.parse_args(["run", "--seed", "0,None,1234,None"])
         assert args.seed == [0, None, 1234, None]
 
+    def test_run_command_resume_flag(self):
+        """Test Run command resume flag parsing."""
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers()
+        Run.create(subparsers)
+
+        args = parser.parse_args(["run", "--resume"])
+        assert args.resume is True
+
     @patch("lm_eval.simple_evaluate")
     @patch("lm_eval.config.evaluate_config.EvaluatorConfig")
     @patch("lm_eval.loggers.EvaluationTracker")
@@ -623,6 +632,23 @@ class TestEvaluatorConfigFromCLI:
         ns = Namespace(
             tasks=["hellaswag"],
             log_samples=True,
+            output_path=None,
+        )
+
+        with pytest.raises(ValueError, match="output_path"):
+            EvaluatorConfig.from_cli(ns)
+
+    def test_validation_error_resume_without_output(self):
+        """Test that resume without output_path raises ValueError."""
+        from argparse import Namespace
+
+        import pytest
+
+        from lm_eval.config.evaluate_config import EvaluatorConfig
+
+        ns = Namespace(
+            tasks=["hellaswag"],
+            resume=True,
             output_path=None,
         )
 
